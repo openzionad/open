@@ -4,7 +4,7 @@ import mathutils
 import os
 import math
 from bpy.types import Operator, Panel, Scene, PropertyGroup
-from bpy.props import StringProperty, EnumProperty, IntProperty, PointerProperty, BoolProperty
+from bpy.props import StringProperty, EnumProperty, IntProperty, PointerProperty, BoolProperty, FloatProperty
 from datetime import datetime
 
 # ===================================================================
@@ -18,7 +18,7 @@ ADDON_CATEGORY_NAME = "[aaa   world  20250714 ]"
 bl_info = {
     "name": f"{ADDON_CATEGORY_NAME} (World & Links)",
     "author": "zionadchat & Your Name",
-    "version": (9, 0, 1), # ★動作確認済み最終版
+    "version": (9, 0, 3), # ★バージョンアップ
     "blender": (4, 1, 0),
     "location": "View3D > Sidebar > " + ADDON_CATEGORY_NAME,
     "description": "ワールド設定、エンジン連動、パネル展開、初期視点設定などを含む統合アドオン",
@@ -64,13 +64,21 @@ def update_background_mode(self, context):
     elif mode == 'HDRI': links.new(env_node.outputs['Color'], background_node.inputs['Color'])
     update_viewport(context)
 
+def update_sun_size_from_percent(self, context):
+    world, tree = get_world_nodes(context, create=False)
+    if not tree: return
+    sky_node = tree.nodes.get('Sky Texture')
+    if sky_node:
+        max_angle_rad = math.pi
+        sky_node.sun_size = (self.sun_size_percent / 100.0) * max_angle_rad
+
 # ===================================================================
 # プロパティグループ
 # ===================================================================
 class ZIONAD_WorldProperties(PropertyGroup):
     background_mode: EnumProperty(name="Background Mode", items=[('HDRI', "HDRI", ""), ('SKY', "Sky", "")], default='SKY', update=update_background_mode)
+    sun_size_percent: FloatProperty(name="Sun Size", description="太陽のサイズをパーセンテージで設定 (0% = 0°, 100% = 180°)", subtype='PERCENTAGE', min=0.0, max=100.0, default=(30.0 / 180.0) * 100.0, update=update_sun_size_from_percent)
 class ZIONAD_LinkPanelProperties(PropertyGroup):
-    # ★★★ 変更点: リンクパネルのタイトルをご要望通りに変更 ★★★
     show_main_docs: BoolProperty(name="HDRi ワールドコントロール 20250705", default=True)
     show_new_docs: BoolProperty(name="更新情報 / 目次", default=True)
     show_old_docs: BoolProperty(name="過去のドキュメント", default=False)
@@ -82,36 +90,46 @@ class ZIONAD_LinkPanelProperties(PropertyGroup):
 class ZIONAD_OT_ResetSkyProperty(Operator):
     bl_idname = f"{PREFIX}.reset_sky_property"; bl_label = "Reset Sky Property"; bl_options = {'REGISTER', 'UNDO'}; property_to_reset: StringProperty()
     def execute(self, context):
-        world, tree = get_world_nodes(context, create=False);
+        props = context.scene.zionad_world_props; world, tree = get_world_nodes(context, create=False)
         if not tree: return {'CANCELLED'}
         sky_node = tree.nodes.get('Sky Texture'); background_node = tree.nodes.get('Background')
-        prop = self.property_to_reset
-        defaults = {"sun_size": math.radians(0.545), "sun_intensity": 1.0, "sun_elevation": math.radians(45.0), "sun_rotation": math.radians(0.0), "altitude": 0.0, "air_density": 1.0, "dust_density": 0.0, "ozone_density": 3.0, "strength": 1.0,}
+        prop = self.property_to_reset; default_sun_size_rad = math.radians(0.545); max_angle_rad = math.pi; default_sun_size_percent = (default_sun_size_rad / max_angle_rad) * 100.0
+        defaults = {"sun_size_percent": default_sun_size_percent, "sun_intensity": 1.0, "sun_elevation": math.radians(45.0), "sun_rotation": math.radians(0.0), "altitude": 0.0, "air_density": 1.0, "dust_density": 0.0, "ozone_density": 3.0, "strength": 1.0,}
         if prop in defaults:
             if prop == "strength" and background_node: background_node.inputs['Strength'].default_value = defaults[prop]
+            elif prop == "sun_size_percent": setattr(props, prop, defaults[prop])
             elif sky_node and hasattr(sky_node, prop): setattr(sky_node, prop, defaults[prop])
             self.report({'INFO'}, f"Reset '{prop}' to default.")
         else: self.report({'WARNING'}, f"Unknown property to reset: {prop}")
         return {'FINISHED'}
 
 class ZIONAD_OT_ShowWorldProperties(Operator):
-    bl_idname = f"{PREFIX}.show_world_properties"; bl_label = "Open World Settings Panel"; bl_options = {'REGISTER', 'UNDO'}
+    # ★★★ 変更点: ボタンのラベルをより具体的に変更 ★★★
+    bl_idname = f"{PREFIX}.show_world_properties"; bl_label = "右下をワールド設定にする"; bl_options = {'REGISTER', 'UNDO'}
     def execute(self, context):
-        text_editor_area = None
-        for area in context.screen.areas:
-            if area.type == 'TEXT_EDITOR':
-                text_editor_area = area
-                break
+        # 画面内で最初に見つかったテキストエディタを検索
+        text_editor_area = next((area for area in context.screen.areas if area.type == 'TEXT_EDITOR'), None)
         if text_editor_area:
             text_editor_area.type = 'PROPERTIES'
             text_editor_area.spaces.active.context = 'WORLD'
-            world, tree = get_world_nodes(context, create=False)
-            if tree and 'Background' in tree.nodes:
-                tree.nodes['Background'].inputs['Strength'].default_value = tree.nodes['Background'].inputs['Strength'].default_value
             self.report({'INFO'}, "テキストエディタをワールド設定に切り替えました。")
             return {'FINISHED'}
         else:
-            self.report({'WARNING'}, "テキストエディタが画面に表示されていません。")
+            self.report({'WARNING'}, "切り替え対象のテキストエディタが見つかりません。")
+            return {'CANCELLED'}
+
+# ★★★ 変更点: プロパティエディタをテキストエディタに戻すオペレーターを新規作成 ★★★
+class ZIONAD_OT_ShowTextEditor(Operator):
+    bl_idname = f"{PREFIX}.show_text_editor"; bl_label = "右下をテキストエディタにする"; bl_options = {'REGISTER', 'UNDO'}
+    def execute(self, context):
+        # 画面内で最初に見つかったプロパティエディタを検索
+        properties_area = next((area for area in context.screen.areas if area.type == 'PROPERTIES'), None)
+        if properties_area:
+            properties_area.type = 'TEXT_EDITOR'
+            self.report({'INFO'}, "プロパティエディタをテキストエディタに切り替えました。")
+            return {'FINISHED'}
+        else:
+            self.report({'WARNING'}, "切り替え対象のプロパティエディタが見つかりません。")
             return {'CANCELLED'}
 
 class ZIONAD_OT_ToggleSunDisc(Operator):
@@ -123,7 +141,8 @@ class ZIONAD_OT_ToggleSunDisc(Operator):
         if not sky_node or sky_node.sky_type != 'NISHITA': self.report({'WARNING'}, "Nishita Sky Texture not found."); return {'CANCELLED'}
         sky_node.sun_disc = not sky_node.sun_disc
         if sky_node.sun_disc:
-            context.scene.render.engine = 'CYCLES'; sky_node.sun_size = math.radians(30.0)
+            context.scene.render.engine = 'CYCLES'; props = context.scene.zionad_world_props
+            props.sun_size_percent = (30.0 / 180.0) * 100.0
             self.report({'INFO'}, "Sun Disc ON (Sun Size set to 30°). Switched to Cycles.")
         else:
             context.scene.render.engine = 'EEVEE'; self.report({'INFO'}, "Sun Disc OFF. Switched to Eevee.")
@@ -162,9 +181,9 @@ class ZIONAD_OT_RemoveAddon(Operator):
 # ===================================================================
 class ZIONAD_PT_WorldControlPanel(Panel):
     bl_label = "World Control"; bl_idname = f"{PREFIX}_PT_world_control"; bl_space_type = 'VIEW_3D'; bl_region_type = 'UI'; bl_category = ADDON_CATEGORY_NAME; bl_order = 0
-    def _draw_prop_with_reset(self, layout, node, prop_name, text=None):
+    def _draw_prop_with_reset(self, layout, obj, prop_name, text=None):
         row = layout.row(align=True); split = row.split(factor=0.85, align=True)
-        split.prop(node, prop_name, text=text if text else prop_name.replace("_", " ").title())
+        split.prop(obj, prop_name, text=text if text else prop_name.replace("_", " ").title())
         op = split.operator(ZIONAD_OT_ResetSkyProperty.bl_idname, text="", icon='FILE_REFRESH'); op.property_to_reset = prop_name
     def _draw_input_with_reset(self, layout, node_input, prop_name, text=None):
         row = layout.row(align=True); split = row.split(factor=0.85, align=True)
@@ -178,14 +197,20 @@ class ZIONAD_PT_WorldControlPanel(Panel):
         box_mode = layout.box(); box_mode.prop(props, "background_mode", expand=True); layout.separator()
         if props.background_mode == 'SKY':
             box_sky = layout.box(); box_sky.label(text="Sky Texture", icon='WORLD_DATA')
-            box_sky.operator(ZIONAD_OT_ShowWorldProperties.bl_idname, icon='PROPERTIES'); box_sky.separator()
+            
+            # ★★★ 変更点: 2つのボタンを縦に並べて配置 ★★★
+            col = box_sky.column(align=True)
+            col.operator(ZIONAD_OT_ShowWorldProperties.bl_idname, icon='PROPERTIES')
+            col.operator(ZIONAD_OT_ShowTextEditor.bl_idname, icon='TEXT') # 新しいボタンを追加
+            
+            box_sky.separator()
             sky_node = nodes.get('Sky Texture'); background_node = nodes.get('Background')
             if sky_node:
                 col_sky = box_sky.column(align=True); self._draw_prop_with_reset(col_sky, sky_node, "sky_type", text="Type")
                 if sky_node.sky_type == 'NISHITA':
                     op_text = f"Sun Disc ON ({'Cycles'})" if sky_node.sun_disc else f"Sun Disc OFF ({'Eevee'})"
                     col_sky.operator(ZIONAD_OT_ToggleSunDisc.bl_idname, text=op_text, depress=sky_node.sun_disc); col_sky.separator()
-                    self._draw_prop_with_reset(col_sky, sky_node, "sun_size")
+                    self._draw_prop_with_reset(col_sky, props, "sun_size_percent", text="Sun Size")
                     self._draw_prop_with_reset(col_sky, sky_node, "sun_intensity")
                     if background_node: self._draw_input_with_reset(col_sky, background_node.inputs['Strength'], "strength", text="Strength")
                     self._draw_prop_with_reset(col_sky, sky_node, "sun_elevation")
@@ -221,11 +246,10 @@ class ZIONAD_PT_RemovePanel(Panel):
 def apply_initial_sky_settings(context):
     world, tree = get_world_nodes(context);
     if not tree: return
-    nodes = tree.nodes
-    sky_node = nodes.get('Sky Texture') or nodes.new('ShaderNodeTexSky'); background_node = nodes.get('Background') or nodes.new('ShaderNodeBackground')
-    sky_node.sky_type = 'NISHITA'; sky_node.sun_disc = True; sky_node.sun_size = math.radians(30.0)
-    sky_node.sun_intensity = 0.01; 
-    sky_node.sun_elevation = math.radians(3.0); sky_node.sun_rotation = math.radians(0.0)
+    nodes = tree.nodes; sky_node = nodes.get('Sky Texture') or nodes.new('ShaderNodeTexSky'); background_node = nodes.get('Background') or nodes.new('ShaderNodeBackground')
+    sky_node.sky_type = 'NISHITA'; sky_node.sun_disc = True
+    props = context.scene.zionad_world_props; props.sun_size_percent = (30.0 / 180.0) * 100.0
+    sky_node.sun_intensity = 0.01; sky_node.sun_elevation = math.radians(3.0); sky_node.sun_rotation = math.radians(0.0)
     sky_node.altitude = 0.0; sky_node.air_density = 1.0; sky_node.dust_density = 1.0; sky_node.ozone_density = 10.0
     background_node.inputs['Strength'].default_value = 0.3
 def initial_setup():
@@ -244,7 +268,10 @@ def initial_setup():
 
 classes = (
     ZIONAD_WorldProperties, ZIONAD_LinkPanelProperties,
-    ZIONAD_OT_ShowWorldProperties, ZIONAD_OT_ToggleSunDisc, ZIONAD_OT_ResetSkyProperty,
+    ZIONAD_OT_ShowWorldProperties,
+    # ★★★ 変更点: 新しいオペレータークラスを登録リストに追加 ★★★
+    ZIONAD_OT_ShowTextEditor,
+    ZIONAD_OT_ToggleSunDisc, ZIONAD_OT_ResetSkyProperty,
     ZIONAD_OT_LoadSkyPreset, ZIONAD_OT_LoadHdriFromList,
     ZIONAD_OT_OpenURL, ZIONAD_OT_RemoveAddon,
     ZIONAD_PT_WorldControlPanel, ZIONAD_PT_LinksPanel, ZIONAD_PT_RemovePanel
