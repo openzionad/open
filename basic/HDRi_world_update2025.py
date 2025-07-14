@@ -18,7 +18,7 @@ ADDON_CATEGORY_NAME = "[aaa   world  20250714 ]"
 bl_info = {
     "name": f"{ADDON_CATEGORY_NAME} (World & Links)",
     "author": "zionadchat & Your Name",
-    "version": (9, 0, 6), # ★バージョンアップ
+    "version": (9, 0, 7), # ★バージョンアップ
     "blender": (4, 1, 0),
     "location": "View3D > Sidebar > " + ADDON_CATEGORY_NAME,
     "description": "ワールド設定、エンジン連動、パネル展開、初期視点設定などを含む統合アドオン",
@@ -39,6 +39,7 @@ HDRI_PRESETS = [
     {"path": r"C:\a111\HDRi_pic\rogland_clear_night_4k.hdr", "name": "rogland_clear_night_4k.hdr", "rotation": None},
     {"path": r"C:\a111\HDRi_pic\rogland_moonlit_night_4k.hdr", "name": "rogland_moonlit_night_4k.hdr", "rotation": None},
     {"path": r"C:\a111\HDRi_pic\golden_bay_4k.hdr", "name": "golden_bay_4k.hdr", "rotation": None},
+    {"path": r"C:\a111\HDRi_pic\hangar_interior_4k.hdr", "name": "hangar_interior_4k.hdr", "rotation": None},
 ]
 
 ADDON_LINKS = [
@@ -107,32 +108,25 @@ def update_background_mode(self, context):
     sky_node = find_or_create_node(nodes, 'ShaderNodeTexSky', 'Sky Texture', (-450, 100))
     env_node = find_or_create_node(nodes, 'ShaderNodeTexEnvironment', 'Environment Texture', (-450, -100))
     
-    # 既存の接続をクリア
     if background_node.inputs['Color'].is_linked:
         links.remove(background_node.inputs['Color'].links[0])
     if output_node.inputs['Surface'].is_linked:
         links.remove(output_node.inputs['Surface'].links[0])
         
-    # Background -> World Output は常に接続
     links.new(background_node.outputs['Background'], output_node.inputs['Surface'])
     
     if mode == 'SKY':
         links.new(sky_node.outputs['Color'], background_node.inputs['Color'])
     elif mode == 'HDRI':
-        # ★★★ 変更点: HDRI用のノード接続を確立 ★★★
         mapping_node = find_or_create_node(nodes, 'ShaderNodeMapping', 'Mapping', (-700, -100))
         tex_coord_node = find_or_create_node(nodes, 'ShaderNodeTexCoord', 'Texture Coordinate', (-950, -100))
         
-        # Generated -> Mapping
         if not mapping_node.inputs['Vector'].is_linked:
             links.new(tex_coord_node.outputs['Generated'], mapping_node.inputs['Vector'])
-        # Mapping -> Environment Texture
         if not env_node.inputs['Vector'].is_linked:
             links.new(mapping_node.outputs['Vector'], env_node.inputs['Vector'])
-        # Environment Texture -> Background
         links.new(env_node.outputs['Color'], background_node.inputs['Color'])
         
-        # ★★★ 変更点: モード切替時に最後に選択されていたHDRIを再読み込み ★★★
         props = context.scene.zionad_world_props
         if 0 <= props.hdri_list_index < len(HDRI_PRESETS):
              bpy.ops.world_20240715120000.load_hdri_from_list(hdri_index=props.hdri_list_index)
@@ -153,7 +147,6 @@ def update_sun_size_from_percent(self, context):
 class ZIONAD_WorldProperties(PropertyGroup):
     background_mode: EnumProperty(name="Background Mode", items=[('HDRI', "HDRI", ""), ('SKY', "Sky", "")], default='SKY', update=update_background_mode)
     sun_size_percent: FloatProperty(name="Sun Size", description="太陽のサイズをパーセンテージで設定 (0% = 0°, 100% = 180°)", subtype='PERCENTAGE', min=0.0, max=100.0, default=(30.0 / 180.0) * 100.0, update=update_sun_size_from_percent)
-    # ★★★ 変更点: HDRIの選択状態を記憶するプロパティを追加 ★★★
     hdri_list_index: IntProperty(name="Active HDRI Index", default=0)
 
 class ZIONAD_LinkPanelProperties(PropertyGroup):
@@ -173,13 +166,11 @@ class ZIONAD_OT_ResetSkyProperty(Operator):
         sky_node = tree.nodes.get('Sky Texture'); background_node = tree.nodes.get('Background'); mapping_node = tree.nodes.get('Mapping')
         prop = self.property_to_reset; default_sun_size_rad = math.radians(0.545); max_angle_rad = math.pi; default_sun_size_percent = (default_sun_size_rad / max_angle_rad) * 100.0
         defaults = {"sun_size_percent": default_sun_size_percent, "sun_intensity": 1.0, "sun_elevation": math.radians(45.0), "sun_rotation": math.radians(0.0), "altitude": 0.0, "air_density": 1.0, "dust_density": 0.0, "ozone_density": 3.0, "strength": 1.0,}
-        # ★★★ 変更点: HDRIトランスフォームのリセット機能を追加 ★★★
         if prop in ['Location', 'Rotation', 'Scale'] and mapping_node:
             if prop == 'Location': mapping_node.inputs['Location'].default_value = (0, 0, 0)
             elif prop == 'Rotation': mapping_node.inputs['Rotation'].default_value = (0, 0, 0)
             elif prop == 'Scale': mapping_node.inputs['Scale'].default_value = (1, 1, 1)
-            self.report({'INFO'}, f"Reset '{prop}' to default.")
-            return {'FINISHED'}
+            self.report({'INFO'}, f"Reset '{prop}' to default."); return {'FINISHED'}
 
         if prop in defaults:
             if prop == "strength" and background_node: background_node.inputs['Strength'].default_value = defaults[prop]
@@ -237,48 +228,35 @@ class ZIONAD_OT_LoadSkyPreset(Operator):
             sky_node.sun_elevation = math.radians(preset.get("sun_elevation", 45.0))
         self.report({'INFO'}, f"Loaded preset: {preset['name']}"); return {'FINISHED'}
 
-# ★★★ 変更点: HDRI読み込みオペレーターの処理を完全に実装 ★★★
 class ZIONAD_OT_LoadHdriFromList(Operator):
     bl_idname = f"{PREFIX}.load_hdri_from_list"; bl_label = "Load HDRI from List"; bl_options = {'REGISTER', 'UNDO'}
     hdri_index: IntProperty()
-
     def execute(self, context):
         props = context.scene.zionad_world_props
-        if not (0 <= self.hdri_index < len(HDRI_PRESETS)):
-            self.report({'ERROR'}, "Invalid HDRI index"); return {'CANCELLED'}
+        if not (0 <= self.hdri_index < len(HDRI_PRESETS)): self.report({'ERROR'}, "Invalid HDRI index"); return {'CANCELLED'}
         
-        # 選択状態を更新し、モードをHDRIに設定
         props.hdri_list_index = self.hdri_index
-        if props.background_mode != 'HDRI':
-            props.background_mode = 'HDRI'
+        if props.background_mode != 'HDRI': props.background_mode = 'HDRI'
         
-        preset = HDRI_PRESETS[self.hdri_index]
-        filepath = preset["path"]
-        
+        preset = HDRI_PRESETS[self.hdri_index]; filepath = preset["path"]
         world, tree = get_world_nodes(context)
         if not tree: return {'CANCELLED'}
         
         env_node = tree.nodes.get('Environment Texture')
-        if not env_node: 
-            self.report({'ERROR'}, "Environment Texture node not found."); return {'CANCELLED'}
+        if not env_node: self.report({'ERROR'}, "Environment Texture node not found."); return {'CANCELLED'}
 
-        # 画像をロード
         if os.path.exists(filepath):
-            try:
-                env_node.image = bpy.data.images.load(filepath, check_existing=True)
-            except RuntimeError as e:
-                self.report({'ERROR'}, f"Failed to load image: {e}"); return {'CANCELLED'}
-        else:
-            self.report({'WARNING'}, f"File not found: {filepath}"); return {'CANCELLED'}
+            try: env_node.image = bpy.data.images.load(filepath, check_existing=True)
+            except RuntimeError as e: self.report({'ERROR'}, f"Failed to load image: {e}"); return {'CANCELLED'}
+        else: self.report({'WARNING'}, f"File not found: {filepath}"); return {'CANCELLED'}
         
-        # 回転を設定
         mapping_node = tree.nodes.get('Mapping')
         if mapping_node:
-            # 位置とスケールは常にリセット
             mapping_node.inputs['Location'].default_value = (0, 0, 0)
             mapping_node.inputs['Scale'].default_value = (1, 1, 1)
-            # プリセットに回転値があれば適用、なければリセット
-            mapping_node.inputs['Rotation'].default_value = preset.get("rotation", (0, 0, 0))
+            # ★★★ 変更点: rotationがNoneの場合に (0, 0, 0) を使うように修正 ★★★
+            rotation_value = preset.get("rotation")
+            mapping_node.inputs['Rotation'].default_value = rotation_value if rotation_value is not None else (0, 0, 0)
 
         update_viewport(context)
         self.report({'INFO'}, f"Loaded: {preset['name']}"); return {'FINISHED'}
@@ -332,30 +310,21 @@ class ZIONAD_PT_WorldControlPanel(Panel):
                     self._draw_prop_with_reset(col_sky, sky_node, "altitude"); self._draw_prop_with_reset(col_sky, sky_node, "air_density", text="Air")
                     self._draw_prop_with_reset(col_sky, sky_node, "dust_density", text="Dust"); self._draw_prop_with_reset(col_sky, sky_node, "ozone_density", text="Ozone")
         
-        # ★★★ 変更点: HDRIモード用のUIを完全に追加 ★★★
         elif props.background_mode == 'HDRI':
-            box_env = layout.box()
-            box_env.label(text="Environment Texture (HDRI)", icon='IMAGE_DATA')
-            
-            # プリセットリスト
-            col_list = box_env.column(align=True)
-            col_list.label(text="HDRI Presets:")
+            box_env = layout.box(); box_env.label(text="Environment Texture (HDRI)", icon='IMAGE_DATA')
+            col_list = box_env.column(align=True); col_list.label(text="HDRI Presets:")
             for i, preset in enumerate(HDRI_PRESETS):
                 op = col_list.operator(ZIONAD_OT_LoadHdriFromList.bl_idname, text=preset["name"], depress=(props.hdri_list_index == i))
                 op.hdri_index = i
             
             box_env.separator()
             env_node = nodes.get('Environment Texture')
-            if env_node:
-                box_env.template_ID(env_node, "image", open="image.open", text="Select HDRI")
+            if env_node: box_env.template_ID(env_node, "image", open="image.open", text="Select HDRI")
             
-            # トランスフォーム
             mapping_node = nodes.get('Mapping')
             if mapping_node:
-                box_transform = box_env.box()
-                box_transform.label(text="Transform", icon='OBJECT_DATA')
+                box_transform = box_env.box(); box_transform.label(text="Transform", icon='OBJECT_DATA')
                 col_transform = box_transform.column(align=True)
-                # 位置、回転、スケールのUI
                 self._draw_input_with_reset(col_transform, mapping_node.inputs['Location'], 'Location')
                 self._draw_input_with_reset(col_transform, mapping_node.inputs['Rotation'], 'Rotation')
                 self._draw_input_with_reset(col_transform, mapping_node.inputs['Scale'], 'Scale')
@@ -410,9 +379,7 @@ classes = (
     ZIONAD_WorldProperties, ZIONAD_LinkPanelProperties,
     ZIONAD_OT_ShowWorldProperties, ZIONAD_OT_ShowTextEditor,
     ZIONAD_OT_ToggleSunDisc, ZIONAD_OT_ResetSkyProperty,
-    ZIONAD_OT_LoadSkyPreset, 
-    # ★★★ 変更点: HDRI関連のオペレーターを登録 ★★★
-    ZIONAD_OT_LoadHdriFromList,
+    ZIONAD_OT_LoadSkyPreset, ZIONAD_OT_LoadHdriFromList,
     ZIONAD_OT_OpenURL, ZIONAD_OT_RemoveAddon,
     ZIONAD_PT_WorldControlPanel, ZIONAD_PT_LinksPanel, ZIONAD_PT_RemovePanel
 )
