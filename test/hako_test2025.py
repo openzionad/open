@@ -16,12 +16,12 @@ PREFIX = "zionad_isocube"
 ADDON_CATEGORY_NAME = "AAA Isocube"
 
 bl_info = {
-    "name": "AAA Isocube Creator (Non-Destructive)",
+    "name": "AAA Isocube Creator (Boolean Control)",
     "author": "zionadchat & Your Name & AI",
-    "version": (21, 0, 0), # 非破壊ブーリアン機能（オブジェクト分離）を追加
+    "version": (22, 0, 0), # ブーリアン確定をデフォルト化、穴あけ深度を10倍に変更
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > " + ADDON_CATEGORY_NAME,
-    "description": "Creates cubes with optional non-destructive boolean holes, keeping the cutters as separate objects.",
+    "description": "立方体にブーリアンで穴を開けます。デフォルトで穴を確定させますが、カッターを別オブジェクトとして残す非破壊オプションも選択可能です。",
     "category": "Object",
     "doc_url": "https://memo2017.hatenablog.com/entry/2025/07/05/144343",
 }
@@ -90,7 +90,7 @@ def create_face_material(name, props):
     return mat
 
 # ===================================================================
-# プロパティグループ (★★★ 一体化選択プロパティを追加 ★★★)
+# プロパティグループ (★★★ デフォルト値を変更 ★★★)
 # ===================================================================
 class FacePropertyGroup(PropertyGroup):
     image_path: StringProperty(name="Image", subtype='FILE_PATH')
@@ -104,13 +104,14 @@ class MainPropertyGroup(PropertyGroup):
     cube_size: FloatProperty(name="Cube Size", default=2.0, min=0.1)
     drill_holes: BoolProperty(name="6つの穴を開ける", description="立方体の6つの面に円柱状の穴を開けるかどうかを決めます", default=False)
     hole_diameter_percent: FloatProperty(name="穴の直径 (%)", description="穴の直径を立方体の一辺の長さに対するパーセンテージで指定します", default=50.0, min=1.0, max=140.0, subtype='PERCENTAGE')
-    hole_depth_multiplier: FloatProperty(name="穴の貫通深度 (倍率)", description="穴を開ける円柱の高さを、立方体サイズに対する倍率で指定します。1.0より大きい値で完全に貫通します。", default=1.5, min=0.1, soft_max=5.0)
-    
-    # ★★★ 一体化するかどうかを選択するプロパティを追加 ★★★
+    # ★★★ 穴の深さの倍率を10倍に、ソフト上限を20に変更 ★★★
+    hole_depth_multiplier: FloatProperty(name="穴の貫通深度 (倍率)", description="穴を開ける円柱の高さを、立方体サイズに対する倍率で指定します。1.0より大きい値で完全に貫通します。", default=10.0, min=0.1, soft_max=20.0)
+
+    # ★★★ ブーリアン適用（一体化）をデフォルトにする ★★★
     integrate_boolean: BoolProperty(
-        name="一体化する (ブーリアン適用)",
-        description="ON: 従来通り、穴を開けて一体化します。\nOFF: 穴あけ用の円柱を別オブジェクトとして残し、非破壊で編集できるようにします。",
-        default=False
+        name="ブーリアンを適用 (穴を確定)",
+        description="ON: 穴を確定し、カッターを削除します (デフォルト)。\nOFF: カッターを別オブジェクトとして残し、非破壊で編集できるようにします。",
+        default=True
     )
 
     world_z_rotation: FloatProperty(name="World Z Rotation", default=0.0, min=-360.0, max=360.0, unit='ROTATION', description="Overall rotation of the entire isometric setup")
@@ -124,7 +125,7 @@ class ZIONAD_LinkPanelProperties(PropertyGroup):
     show_old_docs: BoolProperty(name="過去のドキュメント", default=False); show_social: BoolProperty(name="関連リンク / SNS", default=False)
 
 # ===================================================================
-# オペレーター (★★★ 非破壊ブーリアンのロジックを追加 ★★★)
+# オペレーター
 # ===================================================================
 class ZIONAD_OT_CreateIsometricCube(Operator):
     bl_idname = f"object.{PREFIX}_create_cube"
@@ -134,7 +135,7 @@ class ZIONAD_OT_CreateIsometricCube(Operator):
     def execute(self, context):
         props = context.scene.zionad_props
 
-        # ... (コレクション、ピボット、マテリアルの準備は変更なし) ...
+        # コレクション、ピボット、マテリアルの準備
         base_collection_name = "Isocube_Collection"
         collection_name = base_collection_name
         i = 1
@@ -153,7 +154,7 @@ class ZIONAD_OT_CreateIsometricCube(Operator):
         face_map = {"top": props.top, "bottom": props.bottom, "front": props.front, "back": props.back, "right": props.right, "left": props.left}
         materials = {key: create_face_material(f"Isocube_Material_{key.capitalize()}_{collection_name}", data) for key, data in face_map.items()}
 
-        # ... (キューブの面削除、UV、マテリアル設定は変更なし) ...
+        # キューブの生成と設定
         bpy.ops.mesh.primitive_cube_add(size=props.cube_size, enter_editmode=True, align='WORLD', location=(0, 0, 0))
         cube = context.active_object
         cube.name = "Isocube"
@@ -186,11 +187,11 @@ class ZIONAD_OT_CreateIsometricCube(Operator):
         context.view_layer.objects.active = cube
         bpy.ops.object.shade_flat()
 
-        # (最後に行う) 穴あけ処理
+        # 穴あけ処理
         if props.drill_holes:
             diameter = props.cube_size * (props.hole_diameter_percent / 100.0)
             radius = diameter / 2.0
-            depth = props.cube_size * props.hole_depth_multiplier
+            depth = props.cube_size * props.hole_depth_multiplier # ★★★ 10倍の深さを使用 ★★★
             cutters = []
             axes = [('X', (0, math.radians(90), 0)), ('Y', (math.radians(90), 0, 0)), ('Z', (0, 0, 0))]
 
@@ -200,35 +201,44 @@ class ZIONAD_OT_CreateIsometricCube(Operator):
                 cutter.name = f"Cutter_{axis}_{collection_name}"
                 cutter.rotation_euler = rotation
                 cutters.append(cutter)
-            
-            # ★★★ ここからロジックを分岐 ★★★
-            for cutter in cutters:
-                bool_mod = cube.modifiers.new(name=f'BooleanHole_{cutter.name}', type='BOOLEAN')
-                bool_mod.operation = 'DIFFERENCE'
-                bool_mod.object = cutter
-                bool_mod.solver = 'EXACT'
 
+            # ロジック分岐: 一体化するか、非破壊で残すか
+            for cutter in cutters:
+                # ★★★ `integrate_boolean` が True (デフォルト) なら適用、Falseなら適用しない ★★★
                 if props.integrate_boolean:
-                    # 【一体化する場合】モディファイアを適用してカッターを削除（従来通り）
+                    # 【一体化する場合】モディファイアを追加して即座に適用し、カッターを削除
+                    bool_mod = cube.modifiers.new(name=f'BooleanHole_{cutter.name}', type='BOOLEAN')
+                    bool_mod.operation = 'DIFFERENCE'
+                    bool_mod.object = cutter
+                    bool_mod.solver = 'EXACT'
+                    
                     context.view_layer.objects.active = cube
                     bpy.ops.object.modifier_apply(modifier=bool_mod.name)
                     bpy.data.objects.remove(cutter, do_unlink=True)
                 else:
-                    # 【別オブジェクトとして残す場合】カッターを設定して保持
-                    # ビューポートで邪魔にならないようにワイヤー表示にする
+                    # 【別オブジェクトとして残す場合】モディファイアを設定するだけ
+                    bool_mod = cube.modifiers.new(name=f'BooleanHole_{cutter.name}', type='BOOLEAN')
+                    bool_mod.operation = 'DIFFERENCE'
+                    bool_mod.object = cutter
+                    bool_mod.solver = 'EXACT'
+
+                    # カッターオブジェクトを管理しやすく設定
                     cutter.display_type = 'WIRE'
-                    # レンダリングに表示されないようにする
                     cutter.hide_render = True
-                    # 専用コレクションに移動し、ピボットに親子付けする
                     if cutter.name in context.collection.objects:
                         context.collection.objects.unlink(cutter)
                     iso_collection.objects.link(cutter)
                     cutter.parent = pivot
+        
+        # apply_modifiersがTrueの時に発生する可能性のある問題を回避するため、
+        # ループの外で最後にアクティブオブジェクトを再設定
+        context.view_layer.objects.active = cube
+        bpy.ops.object.select_all(action='DESELECT')
+        cube.select_set(True)
 
         self.report({'INFO'}, "Isometric cube created.")
         return {'FINISHED'}
 
-# ... (RandomizeImages, OpenURL, RemoveAddon オペレーターは変更なし) ...
 class ZIONAD_OT_RandomizeImages(Operator):
     bl_idname = f"object.{PREFIX}_randomize_images"; bl_label = "Assign Random Images"
     def execute(self, context):
@@ -261,7 +271,7 @@ class ZIONAD_OT_RemoveAddon(Operator):
         unregister(); self.report({'INFO'}, "アドオンを登録解除しました。"); return {'FINISHED'}
 
 # ===================================================================
-# UIパネル (★★★ 一体化選択のUIを追加 ★★★)
+# UIパネル (★★★ UIの文言を調整 ★★★)
 # ===================================================================
 class ZIONAD_PT_MainPanel(Panel):
     bl_label = "Isocube Creator"; bl_idname = f"{PREFIX}_PT_main_panel"; bl_space_type = 'VIEW_3D'; bl_region_type = 'UI'; bl_category = ADDON_CATEGORY_NAME; bl_order=0
@@ -286,7 +296,7 @@ class ZIONAD_PT_MainPanel(Panel):
             sub.active = props.drill_holes
             sub.prop(props, "hole_diameter_percent")
             sub.prop(props, "hole_depth_multiplier")
-            # ★★★ 一体化設定のUIを追加 ★★★
+            # ★★★ 一体化設定のUI（文言調整済み） ★★★
             sub.prop(props, "integrate_boolean")
 
         box.prop(props, "world_z_rotation")
@@ -358,8 +368,9 @@ if __name__ == "__main__": register()
 #
 # ### 次のAIへの指示：このコメントブロックは削除せず、ユーザーの指示の履歴として残してください。###
 #
-# ユーザーからの「円柱と　立方体は　別Objectだ　一体化しない」という指示に基づき、アドオンの機能を大幅に修正しました。
-# 1.  【非破壊ブーリアン機能】ブーリアン演算を適用せず、モディファイアとして残すオプションを追加しました。これにより、立方体と円柱（カッター）が別々のオブジェクトとしてシーンに残ります。
-# 2.  【一体化オプションの追加】ユーザーが従来の「一体化（適用）」と新しい「非破壊（分離）」を選べるように、「一体化する (ブーリアン適用)」というチェックボックスをUIに追加しました。
-# 3.  【カッターオブジェクトの管理】非破壊モードの場合、カッターとなる円柱オブジェクトを削除せず、ビューポートでの表示を「ワイヤーフレーム」に、レンダリングを「非表示」に自動設定します。また、生成されたキューブと同じコレクションに格納し、共通のピボットに親子付けすることで、管理を容易にしました。
-# 4.  【バージョン更新】この重要な機能変更を反映し、バージョンを(21, 0, 0)にメジャーアップデートしました。
+# ユーザーからの「円柱３つでboolan １０倍長さでしたあと 立方体の穴を確定させて」という指示に基づき、アドオンの機能を調整しました。
+# 1.  【ブーリアン確定のデフォルト化】ブーリアン演算を適用し、穴の開いた単一メッシュを生成する挙動をデフォルトに変更しました。これにより、チェックを入れなくても穴が確定されます。
+# 2.  【非破壊オプションの維持】以前の「非破壊（オブジェクト分離）」機能は、「ブーリアンを適用」チェックボックスをOFFにすることで引き続き利用可能です。
+# 3.  【穴あけ深度の増加】ブーリアンに使用する円柱（カッター）の高さを、立方体サイズに対する倍率のデフォルト値を「10倍」に設定しました。これにより、大きな立方体でも確実に貫通するようになります。
+# 4.  【UI文言の調整】デフォルトの挙動が「一体化」であることをユーザーが直感的に理解できるよう、UIのラベルと説明文を更新しました。
+# 5.  【バージョン更新】これらの重要なデフォルト挙動の変更を反映し、バージョンを(22, 0, 0)にメジャーアップデートしました。
