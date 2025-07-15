@@ -18,10 +18,10 @@ ADDON_CATEGORY_NAME = "AAA Isocube"
 bl_info = {
     "name": "AAA Isocube Creator (Full-Featured + Hole Drilling)",
     "author": "zionadchat & Your Name & AI",
-    "version": (20, 2, 0), # レンダリングエンジン選択、穴の深度設定を追加
+    "version": (20, 0, 0), # 累積生成、カメラ/ライト削除、穴あけ機能追加
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > " + ADDON_CATEGORY_NAME,
-    "description": "Allows creating cubes, drilling holes with adjustable depth, and selecting the render engine (Eevee/Cycles).",
+    "description": "Allows creating multiple cubes, with an option to drill holes through the faces, without deleting previous ones.",
     "category": "Object",
     "doc_url": "https://memo2017.hatenablog.com/entry/2025/07/05/144343",
 }
@@ -38,6 +38,8 @@ SOCIAL_LINKS = [ {"label": "単純トリック", "url": "https://posfie.com/@tim
 # ヘルパー関数
 # ===================================================================
 def cleanup_scene(collection_name, pivot_name):
+    # この関数は現在、メインの作成オペレーターからは呼び出されませんが、
+    # 将来的に「全削除」などの機能を追加する可能性を考慮して残しています。
     if pivot_name in bpy.data.objects:
         bpy.data.objects.remove(bpy.data.objects[pivot_name], do_unlink=True)
     if collection_name in bpy.data.collections:
@@ -90,7 +92,7 @@ def create_face_material(name, props):
     return mat
 
 # ===================================================================
-# プロパティグループ (★★★ 穴の深度プロパティを追加 ★★★)
+# プロパティグループ
 # ===================================================================
 class FacePropertyGroup(PropertyGroup):
     image_path: StringProperty(name="Image", subtype='FILE_PATH')
@@ -102,18 +104,22 @@ class FacePropertyGroup(PropertyGroup):
 
 class MainPropertyGroup(PropertyGroup):
     cube_size: FloatProperty(name="Cube Size", default=2.0, min=0.1)
-    drill_holes: BoolProperty(name="6つの穴を開ける", description="立方体の6つの面に円柱状の穴を開けるかどうかを決めます", default=False)
-    hole_diameter_percent: FloatProperty(name="穴の直径 (%)", description="穴の直径を立方体の一辺の長さに対するパーセンテージで指定します", default=50.0, min=1.0, max=140.0, subtype='PERCENTAGE')
     
-    # ★★★ 穴の貫通深度を調整するプロパティを追加 ★★★
-    hole_depth_multiplier: FloatProperty(
-        name="穴の貫通深度 (倍率)",
-        description="穴を開ける円柱の高さを、立方体サイズに対する倍率で指定します。1.0より大きい値で完全に貫通します。",
-        default=1.5,
-        min=0.1,
-        soft_max=5.0
+    # ★★★ 穴あけ機能のプロパティを追加 ★★★
+    drill_holes: BoolProperty(
+        name="6つの穴を開ける",
+        description="立方体の6つの面に円柱状の穴を開けるかどうかを決めます",
+        default=False
     )
-
+    hole_diameter_percent: FloatProperty(
+        name="穴の直径 (%)",
+        description="穴の直径を立方体の一辺の長さに対するパーセンテージで指定します",
+        default=50.0,
+        min=1.0,
+        max=140.0,
+        subtype='PERCENTAGE'
+    )
+    
     world_z_rotation: FloatProperty(name="World Z Rotation", default=0.0, min=-360.0, max=360.0, unit='ROTATION', description="Overall rotation of the entire isometric setup")
     delete_faces: BoolProperty(name="Delete 3 Back Faces", default=True, description="Delete non-visible faces for an isometric view")
     corner_to_keep: EnumProperty(name="Visible Corner", items=[('POS_X_NEG_Y_POS_Z', "Right-Front-Top", ""), ('NEG_X_NEG_Y_POS_Z', "Left-Front-Top", ""), ('POS_X_POS_Y_POS_Z', "Right-Back-Top", ""), ('NEG_X_POS_Y_POS_Z', "Left-Back-Top", ""), ('POS_X_NEG_Y_NEG_Z', "Right-Front-Bottom", ""), ('NEG_X_NEG_Y_NEG_Z', "Left-Front-Bottom", ""), ('POS_X_POS_Y_NEG_Z', "Right-Back-Bottom", ""), ('NEG_X_POS_Y_NEG_Z', "Left-Back-Bottom", "")], default='POS_X_POS_Y_NEG_Z')
@@ -125,7 +131,7 @@ class ZIONAD_LinkPanelProperties(PropertyGroup):
     show_old_docs: BoolProperty(name="過去のドキュメント", default=False); show_social: BoolProperty(name="関連リンク / SNS", default=False)
 
 # ===================================================================
-# オペレーター (★★★ 穴の深度計算を更新 ★★★)
+# オペレーター (★★★ 穴あけ処理を追加 ★★★)
 # ===================================================================
 class ZIONAD_OT_CreateIsometricCube(Operator):
     bl_idname = f"object.{PREFIX}_create_cube"
@@ -135,7 +141,7 @@ class ZIONAD_OT_CreateIsometricCube(Operator):
     def execute(self, context):
         props = context.scene.zionad_props
 
-        # 1. コレクション、ピボット、マテリアルの準備
+        # ユニークな名前のコレクションを作成
         base_collection_name = "Isocube_Collection"
         collection_name = base_collection_name
         i = 1
@@ -145,6 +151,7 @@ class ZIONAD_OT_CreateIsometricCube(Operator):
         iso_collection = bpy.data.collections.new(collection_name)
         context.scene.collection.children.link(iso_collection)
 
+        # ピボットを作成
         bpy.ops.object.empty_add(type='PLAIN_AXES', align='WORLD', location=(0, 0, 0))
         pivot = context.active_object
         pivot.name = "Isocube_Pivot"
@@ -153,83 +160,93 @@ class ZIONAD_OT_CreateIsometricCube(Operator):
             context.collection.objects.unlink(pivot)
         iso_collection.objects.link(pivot)
 
+        # マテリアルを作成
         face_map = {"top": props.top, "bottom": props.bottom, "front": props.front, "back": props.back, "right": props.right, "left": props.left}
         materials = {key: create_face_material(f"Isocube_Material_{key.capitalize()}_{collection_name}", data) for key, data in face_map.items()}
 
-        # 2. キューブを作成し、編集モードで面削除、UV展開、マテリアル設定を行う
-        bpy.ops.mesh.primitive_cube_add(size=props.cube_size, enter_editmode=True, align='WORLD', location=(0, 0, 0))
+        # ★★★ 立方体を作成 (この時点では編集モードに入らない) ★★★
+        bpy.ops.mesh.primitive_cube_add(size=props.cube_size, enter_editmode=False, align='WORLD', location=(0, 0, 0))
         cube = context.active_object
         cube.name = "Isocube"
 
-        for mat in materials.values():
-            if mat: cube.data.materials.append(mat)
-
-        bm = bmesh.from_edit_mesh(cube.data)
-        bm.faces.ensure_lookup_table()
-
-        if props.delete_faces:
-            parts = props.corner_to_keep.split('_')
-            signs = [(1 if p == 'POS' else -1) for p in parts[::2]]
-            axes = [p for p in parts[1::2]]
-            keep_normals = [Vector((s, 0, 0) if ax == 'X' else (0, s, 0) if ax == 'Y' else (0, 0, s)) for s, ax in zip(signs, axes)]
-            faces_to_delete = [f for f in bm.faces if not any((f.normal - kn).length < 0.1 for kn in keep_normals)]
-            if faces_to_delete: bmesh.ops.delete(bm, geom=faces_to_delete, context='FACES')
-
-        if bm.loops.layers.uv.active is None: bm.loops.layers.uv.new()
-        bpy.ops.mesh.select_all(action='SELECT')
-        bpy.ops.uv.unwrap(method='ANGLE_BASED', margin=0.001)
-        
-        mat_indices = {key: i for i, key in enumerate(materials.keys()) if materials[key] is not None}
-        face_normals_map = {"top": (0, 0, 1), "bottom": (0, 0, -1), "right": (1, 0, 0), "left": (-1, 0, 0), "front": (0, -1, 0), "back": (0, 1, 0)}
-        
-        bm.faces.ensure_lookup_table()
-        for face in bm.faces:
-            for name, normal_vec in face_normals_map.items():
-                if (face.normal - Vector(normal_vec)).length < 0.1:
-                    if name in mat_indices: face.material_index = mat_indices[name]
-                    break
-        
-        bmesh.update_edit_mesh(cube.data)
-        bpy.ops.object.mode_set(mode='OBJECT')
-
-        # 3. オブジェクトのセットアップ
-        if cube.name in context.collection.objects:
-            context.collection.objects.unlink(cube)
-        iso_collection.objects.link(cube)
-        cube.parent = pivot
-        
-        bpy.ops.object.select_all(action='DESELECT')
-        cube.select_set(True)
-        context.view_layer.objects.active = cube
-        bpy.ops.object.shade_flat()
-
-        # 4. (最後に行う) 穴あけ処理
+        # ★★★ 穴あけ処理 (ブーリアン演算) ★★★
         if props.drill_holes:
+            bpy.ops.object.mode_set(mode='OBJECT')
+            
+            # 穴を開けるための円柱のパラメータを計算
             diameter = props.cube_size * (props.hole_diameter_percent / 100.0)
             radius = diameter / 2.0
-            # ★★★ 新しいプロパティを使って深度を計算 ★★★
-            depth = props.cube_size * props.hole_depth_multiplier
+            depth = props.cube_size * 1.5  # キューブを確実に貫通する長さ
 
             cutters = []
-            axes = [('X', (0, math.radians(90), 0)), ('Y', (math.radians(90), 0, 0)), ('Z', (0, 0, 0))]
+            axes = [('X', (math.radians(90), 0, 0)), ('Y', (0, math.radians(90), 0)), ('Z', (0, 0, 0))]
 
             for axis, rotation in axes:
-                bpy.ops.mesh.primitive_cylinder_add(radius=radius, depth=depth, location=(0, 0, 0), vertices=64)
+                bpy.ops.mesh.primitive_cylinder_add(radius=radius, depth=depth, location=(0, 0, 0), vertices=64) # 解像度を上げる
                 cutter = context.active_object
                 cutter.name = f"Cutter_{axis}"
                 cutter.rotation_euler = rotation
                 cutters.append(cutter)
             
+            # ブーリアンモディファイアを適用
             for cutter in cutters:
                 bool_mod = cube.modifiers.new(name=f'BooleanHole_{cutter.name}', type='BOOLEAN')
                 bool_mod.operation = 'DIFFERENCE'
                 bool_mod.object = cutter
-                bool_mod.solver = 'EXACT'
-                context.view_layer.objects.active = cube
+                bool_mod.solver = 'EXACT' # より正確な計算
+                
+                # モディファイアを適用
+                bpy.context.view_layer.objects.active = cube
                 bpy.ops.object.modifier_apply(modifier=bool_mod.name)
 
+            # 穴あけに使用した円柱を削除
             for cutter in cutters:
                 bpy.data.objects.remove(cutter, do_unlink=True)
+            
+            # スムースシェーディングを適用して穴の見た目を滑らかにする
+            bpy.ops.object.select_all(action='DESELECT')
+            cube.select_set(True)
+            bpy.context.view_layer.objects.active = cube
+            bpy.ops.object.shade_smooth()
+            # 法線をきれいにするために自動スムーズを有効化
+            cube.data.use_auto_smooth = True
+            cube.data.auto_smooth_angle = math.radians(30)
+
+
+        # キューブをコレクションにリンクし、親子付け
+        if cube.name in context.collection.objects:
+            context.collection.objects.unlink(cube)
+        iso_collection.objects.link(cube)
+        cube.parent = pivot
+
+        # マテリアルを割り当て
+        for mat in materials.values():
+            if mat: cube.data.materials.append(mat)
+            
+        # ★★★ 編集モードに入り、以降の処理を実行 ★★★
+        bpy.context.view_layer.objects.active = cube
+        bpy.ops.object.mode_set(mode='EDIT')
+
+        bm = bmesh.from_edit_mesh(cube.data)
+        if props.delete_faces:
+            parts = props.corner_to_keep.split('_'); signs = [(1 if p == 'POS' else -1) for p in parts[::2]]; axes = [p for p in parts[1::2]]
+            keep_normals = [Vector((s, 0, 0) if ax == 'X' else (0, s, 0) if ax == 'Y' else (0, 0, s)) for s, ax in zip(signs, axes)]
+            faces_to_delete = [f for f in bm.faces if not any((f.normal - kn).length < 0.1 for kn in keep_normals)]
+            if faces_to_delete: bmesh.ops.delete(bm, geom=faces_to_delete, context='FACES')
+
+        if bm.loops.layers.uv.active is None: bm.loops.layers.uv.new()
+        bpy.ops.mesh.select_all(action='SELECT'); bpy.ops.uv.unwrap(method='ANGLE_BASED', margin=0.001)
+        mat_indices = {key: i for i, key in enumerate(materials.keys()) if materials[key] is not None}
+        face_normals_map = {"top": (0, 0, 1), "bottom": (0, 0, -1), "right": (1, 0, 0), "left": (-1, 0, 0), "front": (0, -1, 0), "back": (0, 1, 0)}
+        bm.faces.ensure_lookup_table()
+        for face in bm.faces:
+            for name, normal_vec in face_normals_map.items():
+                # 穴あけ後の面の法線は完全に一致しないため、角度で比較する
+                if face.normal.length > 0.1 and Vector(normal_vec).length > 0.1:
+                    if face.normal.angle(Vector(normal_vec)) < math.radians(5): # 5度未満の誤差を許容
+                        if name in mat_indices: face.material_index = mat_indices[name]
+                        break
+        bmesh.update_edit_mesh(cube.data); bpy.ops.object.mode_set(mode='OBJECT')
 
         self.report({'INFO'}, "Isometric cube created.")
         return {'FINISHED'}
@@ -266,40 +283,29 @@ class ZIONAD_OT_RemoveAddon(Operator):
         unregister(); self.report({'INFO'}, "アドオンを登録解除しました。"); return {'FINISHED'}
 
 # ===================================================================
-# UIパネル (★★★ レンダリングエンジンと深度設定のUIを追加 ★★★)
+# UIパネル (★★★ 穴あけ設定のUIを追加 ★★★)
 # ===================================================================
 class ZIONAD_PT_MainPanel(Panel):
     bl_label = "Isocube Creator"; bl_idname = f"{PREFIX}_PT_main_panel"; bl_space_type = 'VIEW_3D'; bl_region_type = 'UI'; bl_category = ADDON_CATEGORY_NAME; bl_order=0
     def draw(self, context):
-        layout = self.layout; 
-        props = context.scene.zionad_props
-        scene = context.scene
-        
+        layout = self.layout; props = context.scene.zionad_props
         row = layout.row(); row.scale_y = 1.5
         row.operator(ZIONAD_OT_CreateIsometricCube.bl_idname, icon='CUBE')
         layout.separator()
-
-        # ★★★ レンダリングエンジン設定用のUIを追加 ★★★
-        box = layout.box()
-        box.label(text="Scene Settings", icon='SCENE_DATA')
-        # Blenderのシーンプロパティを直接UIに表示して、EeveeとCyclesを選択可能にする
-        box.prop(scene.render, "engine", text="")
-
-        box = layout.box(); box.label(text="General Settings", icon='SETTINGS')
+        box = layout.box(); box.label(text="General Settings", icon='SETTINGS');
         box.prop(props, "cube_size")
+        
+        # ★★★ 穴あけ設定のUIを追加 ★★★
         box.prop(props, "drill_holes")
         if props.drill_holes:
-            # 穴あけ設定を縦に並べる
-            sub = box.column(align=True) 
-            sub.active = props.drill_holes
+            # チェックボックスがオンの時だけ直径設定を表示
+            sub = box.row()
+            sub.active = props.drill_holes # 親のチェックボックスに連動して有効/無効化
             sub.prop(props, "hole_diameter_percent")
-            # ★★★ 貫通深度設定のUIを追加 ★★★
-            sub.prop(props, "hole_depth_multiplier")
-
+        
         box.prop(props, "world_z_rotation")
         box.prop(props, "delete_faces")
         if props.delete_faces: box.prop(props, "corner_to_keep", text="")
-        
         layout.separator()
         box = layout.box(); box.label(text="Face Settings", icon='TEXTURE'); box.operator(ZIONAD_OT_RandomizeImages.bl_idname, icon='FILE_REFRESH')
         faces_to_draw = []
@@ -311,9 +317,8 @@ class ZIONAD_PT_MainPanel(Panel):
             if 'NEG_X' in corner: faces_to_draw.append(("Left", props.left))
             if 'POS_Y' in corner: faces_to_draw.append(("Back", props.back))
             if 'NEG_Y' in corner: faces_to_draw.append(("Front", props.front))
-        else: faces_to_draw = [("Top", props.top), ("Bottom", props.bottom), ("Right", props.right), ("Left", 'Left'), ("Front", props.front), ("Back", props.back)]
+        else: faces_to_draw = [("Top", props.top), ("Bottom", props.bottom), ("Right", props.right), ("Left", props.left), ("Front", props.front), ("Back", props.back)]
         for name, face_prop in faces_to_draw:
-            if name == 'Left': face_prop = props.left # 小さな修正
             box.separator(); box.label(text=name)
             box.prop(face_prop, "image_path", text="");
             if not face_prop.image_path: box.prop(face_prop, "color", text="")
@@ -364,8 +369,9 @@ if __name__ == "__main__": register()
 #
 # ### 次のAIへの指示：このコメントブロックは削除せず、ユーザーの指示の履歴として残してください。###
 #
-# ユーザーからの「eevee work cycles 　選択できるようにする」「円柱のboolan 高さ　していできるようにする」という指示に基づき、アドオンの機能を修正しました。
-# 1.  【レンダリングエンジン選択】UIパネルにシーンのレンダリングエンジン（Eevee/Cycles）を直接切り替えるためのドロップダウンメニューを追加しました。これはシーンのプロパティを直接操作します。
-# 2.  【穴の深度設定】ブーリアン演算に使う円柱の高さ（深度）を、立方体のサイズに対する倍率でユーザーが指定できるようにしました。関連するプロパティとUIスライダーを追加し、生成ロジックに反映させました。
-# 3.  【UI改善】穴あけ関連の設定（直径と深度）が縦に並ぶようにレイアウトを整理し、視認性を向上させました。
-# 4.  【バージョン更新】上記の機能追加を反映し、バージョンを(20, 2, 0)にアップデートしました。
+# ユーザーからの「最初に指定した立方体に６つの穴を開けるかどか　決める」「そのあとは　正方形の中央をちゅうしんとする円柱で　正方形の１辺の％から１４０％で　穴を開けて」という指示に基づき、アドオンの機能を修正しました。
+# 1.  【穴あけ機能の追加】立方体の各面を貫通する穴をブーリアン演算で開ける機能を追加しました。
+# 2.  【UIの追加】「6つの穴を開ける」チェックボックスと、穴の直径をパーセンテージで指定するスライダーをUIパネルに追加しました。
+# 3.  【処理フローの変更】キューブ生成後、オブジェクトモードでブーリアン処理を行い、その後に既存の編集モードでの処理（面削除、UV展開など）を行うようにオペレーターの実行フローを修正しました。
+# 4.  【品質向上】ブーリアン演算のソルバーを 'EXACT' に設定し、穴あけ後のメッシュに自動スムーズを適用することで、生成される形状の品質を向上させました。また、穴あけ後の曲面を含むメッシュでも正しくマテリアルが割り当てられるように、法線ベクトルの比較ロジックを角度ベースに変更しました。
+# 5.  【バージョン更新】上記の重要な機能変更を反映し、バージョンを(20, 0, 0)にメジャーアップデートしました。
