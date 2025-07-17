@@ -1,6 +1,6 @@
 # [厳守事項] このコードは、ユーザーからの「expected a string enum, not bool」というエラー報告に対する修正と、
-# 新たな「Compositorモード選択ボタン」の追加機能を統合した最終安定版です。
-# これまでの全エラーを修正し、バージョン互換性も確保したv25.0.0をベースにしています。
+# 新たな「Compositorモード選択ボタン」の追加機能、そして「ベースカラーの独立制御」機能を統合した最終安定版です。
+# これまでの全エラーを修正し、バージョン互換性も確保したv25.1.0をベースにしています。
 
 import bpy
 import webbrowser
@@ -14,21 +14,21 @@ from datetime import datetime
 # ===================================================================
 
 # --- プレフィックスとID設定 ---
-_PREFIX_STATIC_PART = "z25__stable" # バージョンを更新
+_PREFIX_STATIC_PART = "z25_1__stable" # バージョンを更新
 _PREFIX_INSTANCE_PART = datetime.now().strftime('%Y%m%d%H%M%S')
 PREFIX = f"{_PREFIX_STATIC_PART}_{_PREFIX_INSTANCE_PART}"
 ADDON_MODULE_NAME = __name__
 
 # --- アドオン情報 ---
-ADDON_CATEGORY_NAME = "   [ glare bloom 20250716 ]   "
+ADDON_CATEGORY_NAME = "   [ glare bloom 20250717 ]   " # 日付を更新
 
 bl_info = {
     "name": f"{ADDON_CATEGORY_NAME} (Full Feature, Final Stable)",
     "author": "zionadchat (As Ordered)",
-    "version": (25, 0, 1), # バージョンを更新 (機能追加のためマイナーバージョンアップ)
+    "version": (25, 1, 0), # バージョンを更新 (ベースカラー機能追加のため)
     "blender": (4, 1, 0),
     "location": f"View3D > Sidebar > {ADDON_CATEGORY_NAME}",
-    "description": "【警告: 動的Prefixのため設定は保存されません】カラー調整、ブルーム、リンク、削除機能、各種ボタンを統合した最終安定版",
+    "description": "【警告: 動的Prefixのため設定は保存されません】ベースカラー制御、ブルーム、リンク、削除機能、各種ボタンを統合した最終安定版",
     "category": "zParameter",
     "doc_url": "https://memo2017.hatenablog.com/entry/2025/07/11/131157",
 }
@@ -171,22 +171,32 @@ def apply_material_settings(context):
     if not obj or not obj.active_material: return
     mat = obj.active_material
     if not get_principled_bsdf(mat): return
-    final_color = mathutils.Color(); final_color.hsv = (props.hue, props.saturation, props.brightness)
-    final_color_rgba = (*final_color, 1.0)
+    
+    # ▼▼▼【変更】ベースカラーと発光色を管理▼▼▼
+    emission_color_obj = mathutils.Color(); emission_color_obj.hsv = (props.hue, props.saturation, props.brightness)
+    emission_color_rgba = (*emission_color_obj, 1.0)
+    
     mat.blend_method = 'BLEND' if props.transparency < 1.0 else 'OPAQUE'
     bsdf = get_principled_bsdf(mat)
     bsdf.inputs['Alpha'].default_value = props.transparency
-    bsdf.inputs['Emission Color'].default_value = final_color_rgba
+    bsdf.inputs['Emission Color'].default_value = emission_color_rgba
     bsdf.inputs['Emission Strength'].default_value = props.emission_strength
+    
+    # 同期状態に応じてベースカラーを設定
     if props.sync_base_and_emission_color:
-        bsdf.inputs['Base Color'].default_value = final_color_rgba
+        bsdf.inputs['Base Color'].default_value = emission_color_rgba
+    else:
+        bsdf.inputs['Base Color'].default_value = (*props.base_color, 1.0)
+    # ▲▲▲【変更】ここまで▲▲▲
+        
     if props.use_per_object_bloom:
         bloom_nodes = setup_per_object_bloom_nodes(mat, create=True)
         if bloom_nodes:
-            bloom_nodes["emission"].inputs['Color'].default_value = final_color_rgba
+            bloom_nodes["emission"].inputs['Color'].default_value = emission_color_rgba
             bloom_nodes["emission"].inputs['Strength'].default_value = props.per_object_bloom_intensity
             bloom_nodes["layer"].inputs['Blend'].default_value = props.per_object_bloom_falloff
     else: remove_per_object_bloom_nodes(mat)
+
 def update_from_color_picker(self, context):
     if not hasattr(context.scene, 'zionad_is_loading') or context.scene.zionad_is_loading: return
     context.scene.zionad_is_loading = True
@@ -221,13 +231,18 @@ def update_scene_bloom(self, context):
 # ===================================================================
 
 class ZionADToolProperties(PropertyGroup):
-    color: FloatVectorProperty(name="ベース/発光色", subtype='COLOR', default=(1.0, 1.0, 1.0), min=0.0, max=1.0, update=update_from_color_picker)
+    # ▼▼▼【変更】ベースカラーと発光色を分離▼▼▼
+    color: FloatVectorProperty(name="発光色", subtype='COLOR', default=(1.0, 1.0, 1.0), min=0.0, max=1.0, update=update_from_color_picker)
+    base_color: FloatVectorProperty(name="ベースカラー", subtype='COLOR', default=(0.8, 0.8, 0.8), min=0.0, max=1.0, update=update_material_all)
+    sync_base_and_emission_color: BoolProperty(name="ベースカラーと発光色を同期", default=True, update=update_material_all)
+    # ▲▲▲【変更】ここまで▲▲▲
+    
     hue: FloatProperty(name="Hue", subtype='FACTOR', default=0.0, min=0.0, max=1.0, update=update_from_sliders)
     brightness: FloatProperty(name="明度", min=0.0, max=1.0, default=1.0, update=update_from_sliders)
     saturation: FloatProperty(name="彩度", min=0.0, max=1.0, default=1.0, update=update_from_sliders)
     transparency: FloatProperty(name="透明度", min=0.0, max=1.0, default=1.0, subtype='FACTOR', update=update_material_all)
     emission_strength: FloatProperty(name="発光強度", min=0.0, max=50.0, default=0.0, description="オブジェクト中心部の光の強さ", update=update_material_all)
-    sync_base_and_emission_color: BoolProperty(name="ベースカラーと発光色を同期", default=True, update=update_material_all)
+
     use_per_object_bloom: BoolProperty(name="個別ブルームを有効化", default=False, description="マテリアルによるオブジェクト単位のブルーム", update=update_material_all)
     per_object_bloom_falloff: FloatProperty(name="広がり", min=0.0, max=10.0, default=0.5, description="輪郭の光のにじむ範囲", update=update_material_all)
     per_object_bloom_intensity: FloatProperty(name="強度", min=0.0, max=100.0, default=1.0, description="輪郭の光の明るさ", update=update_material_all)
@@ -251,14 +266,21 @@ class ZIONAD_OT_InitializeSettings(Operator):
             mat = get_or_create_material(obj)
             bsdf = get_principled_bsdf(mat)
             if bsdf:
+                # ▼▼▼【変更】ベースカラーと発光色を個別に読み込み▼▼▼
                 emission_rgba = bsdf.inputs['Emission Color'].default_value
                 base_rgba = bsdf.inputs['Base Color'].default_value
-                color_to_load = emission_rgba if any(c > 0.0 for c in emission_rgba[:3]) else base_rgba
-                color_hsv = mathutils.Color(color_to_load[:3])
-                props.hue, props.saturation, props.brightness, props.color = color_hsv.h, color_hsv.s, color_hsv.v, color_hsv
+
+                emission_hsv = mathutils.Color(emission_rgba[:3])
+                props.color = emission_hsv
+                props.hue, props.saturation, props.brightness = emission_hsv.h, emission_hsv.s, emission_hsv.v
+                
+                props.base_color = base_rgba[:3]
+                props.sync_base_and_emission_color = all(abs(b - e) < 0.001 for b, e in zip(base_rgba, emission_rgba))
+                # ▲▲▲【変更】ここまで▲▲▲
+
                 props.transparency = bsdf.inputs['Alpha'].default_value
                 props.emission_strength = bsdf.inputs['Emission Strength'].default_value
-                props.sync_base_and_emission_color = all(abs(b - e) < 0.001 for b, e in zip(base_rgba, emission_rgba))
+
             bloom_nodes = setup_per_object_bloom_nodes(mat, create=False)
             if bloom_nodes:
                 props.use_per_object_bloom = True
@@ -277,6 +299,7 @@ class ZIONAD_OT_InitializeSettings(Operator):
         context.scene.zionad_is_loading = False
         apply_material_settings(context)
         return {'FINISHED'}
+
 class ZIONAD_OT_FinalizeAllChanges(Operator):
     bl_idname = f"{PREFIX}.finalize_all_changes"; bl_label = "全ての変更を確定"; bl_options = {'REGISTER', 'UNDO'}
     def execute(self, context):
@@ -285,8 +308,14 @@ class ZIONAD_OT_FinalizeAllChanges(Operator):
         update_scene_bloom(self, context)
         context.scene.zionad_is_loading = True
         props = context.scene.zionad_tool_props
+        
+        # ▼▼▼【変更】ベースカラーと同期設定もリセット▼▼▼
         props.color, props.hue, props.brightness, props.saturation = (1.0, 1.0, 1.0), 0.0, 1.0, 1.0
-        props.transparency = 1.0; props.emission_strength = 0.0; props.sync_base_and_emission_color = True
+        props.base_color = (0.8, 0.8, 0.8)
+        props.sync_base_and_emission_color = True
+        # ▲▲▲【変更】ここまで▲▲▲
+        
+        props.transparency = 1.0; props.emission_strength = 0.0
         props.use_per_object_bloom = False; props.per_object_bloom_falloff = 0.5; props.per_object_bloom_intensity = 1.0
         props.use_scene_bloom = False; props.scene_bloom_threshold = 1.0; props.scene_bloom_size = 7; props.scene_bloom_mix = 0.0
         context.scene.zionad_is_loading = False
@@ -298,9 +327,11 @@ class ZIONAD_OT_ResetProperty(Operator):
         if not hasattr(context.scene, 'zionad_tool_props'): return {'CANCELLED'}
         props = context.scene.zionad_tool_props
         default_value = ZionADToolProperties.bl_rna.properties[self.prop_name].default
+        # ▼▼▼【変更】'color'のリセット時にHSVもリセットするロジックを維持▼▼▼
         if self.prop_name == 'color':
             props.hue, props.saturation, props.brightness = 0.0, 1.0, 1.0
         setattr(props, self.prop_name, default_value)
+        # ▲▲▲【変更】ここまで▲▲▲
         return {'FINISHED'}
 
 class ZIONAD_OT_OpenURL(Operator):
@@ -354,7 +385,6 @@ class ZIONAD_OT_ToggleCompositorDisplay(Operator):
             shading.use_compositor = 'DISABLED'
         return {'FINISHED'}
 
-# ▼▼▼【新規追加】Compositorモードを設定するオペレーター▼▼▼
 class ZIONAD_OT_SetCompositorMode(Operator):
     bl_idname = f"{PREFIX}.set_compositor_mode"
     bl_label = "Set Compositor Mode"
@@ -373,7 +403,6 @@ class ZIONAD_OT_SetCompositorMode(Operator):
         context.space_data.shading.use_compositor = self.mode
         self.report({'INFO'}, f"Compositor mode set to: {self.mode}")
         return {'FINISHED'}
-# ▲▲▲【新規追加】ここまで▲▲▲
 
 # ===================================================================
 # UIパネル (サイドバーに表示されるUI)
@@ -410,7 +439,6 @@ class ZIONAD_PT_BasePanel(Panel):
         btn_icon = 'HIDE_ON' if is_compositor_on else 'HIDE_OFF'
         box.operator(ZIONAD_OT_ToggleCompositorDisplay.bl_idname, text=btn_text, icon=btn_icon)
 
-        # ▼▼▼【新規追加】Compositorモード選択ボタン▼▼▼
         box = col.box()
         box.label(text="コンポジターモード:")
         row = box.row(align=True)
@@ -421,7 +449,6 @@ class ZIONAD_PT_BasePanel(Panel):
         op_camera.mode = 'CAMERA'
         op_disabled = row.operator(ZIONAD_OT_SetCompositorMode.bl_idname, text="Disabled", depress=current_mode == 'DISABLED')
         op_disabled.mode = 'DISABLED'
-        # ▲▲▲【新規追加】ここまで▲▲▲
 
 class ZIONAD_PT_MaterialPanel(Panel):
     bl_label = "オブジェクト調整"; bl_parent_id = f"{PREFIX}_PT_base_panel"
@@ -432,17 +459,48 @@ class ZIONAD_PT_MaterialPanel(Panel):
             layout.label(text="メッシュオブジェクトを選択", icon='INFO'); return
         if not obj.active_material:
             layout.operator(ZIONAD_OT_InitializeSettings.bl_idname, text="マテリアルを作成して開始", icon='PLAY'); return
+        
         props = context.scene.zionad_tool_props
         def draw_property_row(parent, prop_name, text_label):
             row = parent.row(align=True)
             row.prop(props, prop_name, text=text_label)
             op = row.operator(ZIONAD_OT_ResetProperty.bl_idname, text="", icon='LOOP_BACK'); op.prop_name = prop_name
+        
+        # ▼▼▼【変更】UIを同期状態で分岐▼▼▼
         box = layout.box(); box.label(text="基本色 / 発光")
-        draw_property_row(box, "color", "ベース/発光色")
-        draw_property_row(box, "hue", "色相")
-        draw_property_row(box, "brightness", "明度"); draw_property_row(box, "saturation", "彩度")
-        draw_property_row(box, "emission_strength", "発光強度"); draw_property_row(box, "transparency", "透明度")
-        box.prop(props, "sync_base_and_emission_color")
+        
+        draw_property_row(box, "sync_base_and_emission_color", "同期")
+
+        box.separator()
+
+        if props.sync_base_and_emission_color:
+            col = box.column(align=True)
+            draw_property_row(col, "color", "ベース/発光色")
+        else:
+            col = box.column(align=True)
+            col.label(text="ベースカラー:")
+            draw_property_row(col, "base_color", "")
+            
+            col.separator()
+
+            col.label(text="発光色:")
+            draw_property_row(col, "color", "")
+
+        box.separator()
+
+        col_hsv = box.column(align=True)
+        draw_property_row(col_hsv, "hue", "色相 (発光)")
+        draw_property_row(col_hsv, "brightness", "明度 (発光)")
+        draw_property_row(col_hsv, "saturation", "彩度 (発光)")
+
+        box.separator()
+        
+        col_common = box.column(align=True)
+        draw_property_row(col_common, "emission_strength", "発光強度")
+        draw_property_row(col_common, "transparency", "透明度")
+        
+        # ▲▲▲【変更】ここまで▲▲▲
+
         box = layout.box(); box.label(text="個別ブルーム (マテリアル)")
         box.prop(props, "use_per_object_bloom")
         sub = box.column(align=True); sub.enabled = props.use_per_object_bloom
@@ -513,7 +571,7 @@ classes = (
     ZIONAD_OT_RemoveAddon,
     ZIONAD_OT_SetRenderEngine,
     ZIONAD_OT_ToggleCompositorDisplay,
-    ZIONAD_OT_SetCompositorMode,  # 新規オペレーターを追加
+    ZIONAD_OT_SetCompositorMode,
     ZIONAD_PT_BasePanel,
     ZIONAD_PT_MaterialPanel,
     ZIONAD_PT_SceneBloomPanel,
@@ -545,17 +603,19 @@ if __name__ == "__main__":
     register()
 
 # === 次の生成AIへの引き継ぎコメント ===
-# ユーザーからの指示に基づき、Blenderの`use_compositor`プロパティ（'ALWAYS', 'CAMERA', 'DISABLED'のenum文字列）を選択するボタンを安定版(v25.0.0)に追加しました。これにより、アドオンのバージョンをv25.0.1としました。既存のトグルボタンは変更せず、新機能として追加することで安定性を維持しています。
+# ユーザーからの「Objectのベースの色変更もしたい」という要望に基づき、アドオンのバージョンをv25.1.0に更新しました。発光色とは独立してベースカラーを制御する機能を追加しています。
 
 # ## **今回の修正と学習**
-# - **機能追加と安定性の両立**: 既存のコード(v25.0.0)をベースとし、影響範囲を最小限に抑える形で新機能（`ZIONAD_OT_SetCompositorMode`オペレーターとUIボタン）を追加しました。既存の`ZIONAD_OT_ToggleCompositorDisplay`はそのまま残しています。
-# - **API仕様の遵守**: `use_compositor`プロパティがenum文字列を要求することを再確認し、新しいオペレーターもこの仕様に準拠させました。`StringProperty`を`options={'HIDDEN'}`と共に利用し、UIから直接文字列を渡す設計は効果的です。
-# - **UI設計の改善**: 各モード（Always, Camera, Disabled）のボタンを一行に配置し、`depress`引数を使って現在の状態を視覚的に分かりやすくしました。これにより、ユーザーは現在の設定を一目で把握できます。
+# - **機能追加（ベースカラー制御）**: `ZionADToolProperties`に`base_color`プロパティを追加し、`sync_base_and_emission_color`フラグを用いてUIと適用ロジック（`apply_material_settings`）を分岐させることで、既存の機能と干渉しない形で新機能を追加しました。
+# - **UIの動的変更**: `Panel`の`draw`メソッド内でプロパティの値（`sync_base_and_emission_color`）を評価し、UIのレイアウトを動的に変更する手法を実装しました。これにより、ユーザーは現在の設定に応じて最適なUIで操作できます。
+# - **状態の読み込み/保存**: `InitializeSettings`オペレーターを修正し、マテリアルからベースカラーと発光色を個別に読み込み、同期状態を正しくUIに反映できるようにしました。同様に、`FinalizeAllChanges`で追加プロパティもリセットされるようにし、アドオンの一貫性を保っています。
 
 # ## **次のAIへの指示**
-# - **安定性の維持**: このコードは安定版（v25.0.1）です。今後、新機能の追加や修正を行う際は、既存の機能（特にマテリアル設定や各種ブルーム、コンポジターのオン/オフ機能）との干渉がないか慎重にテストしてください。
-# - **APIの厳密な確認**: Blenderのプロパティ、特にenum型やポインター型は、直感的な挙動と異なる場合があります。値を設定する前には、必ず公式ドキュメントやPythonコンソール（`bl_rna`を使用）でデータ型と有効な値を確認する習慣を徹底してください。
-# - **ユーザーへの説明**: 新機能「コンポジターモード選択ボタン」は、ユーザーの「ALWAYS, CAMERA, DISABLEDを明示的に選択したい」という要望に応えたものです。この機能が既存の「リアルタイム表示ON/OFF」トグルと共存している点について、質問があれば丁寧に説明してください（例：トグルは素早い切り替え用、選択ボタンは詳細設定用です）。
+# - **安定性の維持**: このコードはv25.1.0の安定版です。今後、新機能の追加や修正を行う際は、特に「カラー同期機能」と「独立カラー設定」の両方のシナリオで動作確認を徹底してください。
+# - **UIの複雑化への配慮**: 機能が増えるにつれてUIパネルが複雑化する可能性があります。もし更なる設定項目が追加される場合は、サブパネルや`bl_options = {'DEFAULT_CLOSED'}`などを活用し、UIの見通しを良くする工夫を検討してください。
+# - **プロパティの役割分担**: 現在、`props.color`とHSVスライダーは「発光色」に紐づいています。この関係性を変更する場合は、関連する全ての更新関数（`update_from_color_picker`, `update_from_sliders`, `apply_material_settings`）を慎重に見直す必要があります。
 # - **引き継ぎ継続**: ユーザー指示である「‘最後に次の生成AIに引き継ぎのコメントを必ず作る’」を遵守し、修正の背景、技術的な詳細、そして次の担当者への注意点を明確に記述し続けてください。
 
 # このコードは正常に動作するはずです。問題や追加の要望があれば、詳細をお知らせください。
+
+
